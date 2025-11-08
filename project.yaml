@@ -1,0 +1,8 @@
+modules:
+  - client
+  - server
+  - core
+  - codegen
+  - example/composeApp
+  - example/backend
+  - example/shared

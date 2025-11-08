@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant User 1
+    participant Repository 1
+    participant Local Database 1
+    participant User 2
+    participant Repository 2
+    participant Backend
+    participant Remote Database
+
+    User 1->>Repository: Creates implicitly an event using a crud transaction
+    Repository 1 ->>Local Database 1: Applies event
+    Repository 1 ->>Backend: Informs about event
+    Backend->>Backend: Validates if client has permissions
+    Backend->>Remote Database: Applies event
+    Backend->>Repository 2 : Informs about new event
+    Repository 2->>Local Database 2: Applies event
+    Repository 2->>User 2: Based on table dependencies we reevaluate some queries

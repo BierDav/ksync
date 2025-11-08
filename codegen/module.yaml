@@ -1,0 +1,34 @@
+product: jvm/app
+
+dependencies:
+  - $libs.ksp
+  - $libs.kotlinpoet
+  - $libs.kotlinpoet.ksp
+  - ../core
+  - $libs.sqlx4k
+  - $libs.jsqlparser
+  - $libs.calcite.core
+  - $libs.log4k.slf4j
+
+
+repositories:
+  - url: https://maven.pkg.github.com/BierDav/Exposed
+    credentials:
+      file: ../local.properties
+      usernameKey: githubActor
+      passwordKey: githubToken
+
+
+
+settings:
+  kotlin:
+    serialization:
+      enabled: true
+      version: 1.9.0
+    optIns:
+      - kotlin.time.ExperimentalTime
+      - kotlin.uuid.ExperimentalUuidApi
+      - kotlinx.serialization.ExperimentalSerializationApi
+      - com.squareup.kotlinpoet.ExperimentalKotlinPoetApi
+      - kotlin.ExperimentalContextParameters
+    freeCompilerArgs: [ -Xcontext-parameters ]

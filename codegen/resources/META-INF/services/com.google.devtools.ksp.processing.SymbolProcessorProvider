@@ -1,0 +1,4 @@
+at.quickme.ksync.EventRepositoryProcessorProvider
+at.quickme.ksync.RepositoryProcessorProvider
+io.github.smyrgeorge.sqlx4k.processor.TableProcessorProvider
+
