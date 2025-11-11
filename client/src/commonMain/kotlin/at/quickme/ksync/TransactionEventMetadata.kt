@@ -1,3 +1,7 @@
+import at.quickme.ksync.EventTransaction
 import at.quickme.ksync.RepositoryEventBase
 
-class TransactionEventMetadata (val occurredEvents: MutableList<RepositoryEventBase<*>> = mutableListOf())
+class TransactionEventMetadata<T : RepositoryEventBase>(
+    val occurredEvents: MutableList<T> = mutableListOf(),
+    var eventTransaction: EventTransaction<T>? = null
+)

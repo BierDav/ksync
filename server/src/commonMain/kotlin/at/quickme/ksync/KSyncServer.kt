@@ -1,5 +1,5 @@
-import at.quickme.ksync.EventTransaction
-import at.quickme.ksync.RepositoryProvider
+package at.quickme.ksync
+
 import io.github.smyrgeorge.sqlx4k.Driver
 import io.github.smyrgeorge.sqlx4k.Transaction
 import kotlinx.coroutines.CoroutineScope
@@ -8,16 +8,15 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.getOrElse
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.launch
 
-class KSyncServer(
+class KSyncServer<T : RepositoryEventBase>(
     private val localDb: Driver,
     private var lastTransactionId: Long,
     private val coroutineScope: CoroutineScope,
     private val repositoryProvider: RepositoryProvider,
-    private val onTransactionCommited: suspend Transaction.(event: EventTransaction) -> Unit,
+    private val onTransactionCommited: suspend Transaction.(event: EventTransaction<T>) -> EventTransaction<T>,
     private val transactionBufferCapacity: Int = 1000,
 ) {
     /***
@@ -26,8 +25,8 @@ class KSyncServer(
      * Be careful to make sure that no transaction with the same [AuthoredEventTransaction.author] and [AuthoredEventTransaction.sequence]
      * already exists in the database otherwise this might cause infinite loops.
      */
-    val incomingTransactions = Channel<EventTransaction>(transactionBufferCapacity)
-    private val outgoingTransactionFlow = MutableSharedFlow<EventTransaction>(
+    val incomingTransactions = Channel<EventTransaction<T>>(transactionBufferCapacity)
+    private val outgoingTransactionFlow = MutableSharedFlow<EventTransaction<T>>(
         replay = 0,
         extraBufferCapacity = 100,
         onBufferOverflow = BufferOverflow.SUSPEND
@@ -37,22 +36,25 @@ class KSyncServer(
         coroutineScope.run {
             launch {
                 for (transaction in incomingTransactions) {
-                    if(transaction.events.isEmpty()) continue
+                    if (transaction.events.isEmpty())
+                        continue
                     val event = transaction.copy(sequence = ++lastTransactionId)
-                    localDb.transaction {
+                    val savedEvent = localDb.transaction {
                         transaction.execute(this, repositoryProvider)
-                        onTransactionCommited(this,event)
+                        onTransactionCommited(this, event)
                     }
-                    outgoingTransactionFlow.emit(event)
+                    lastTransactionId = savedEvent.sequence
+                    outgoingTransactionFlow.emit(savedEvent)
                 }
             }
         }
     }
 
-    suspend fun receiveOutgoingTransactionsAsFlow(): Flow<EventTransaction> =
+    fun receiveOutgoingTransactionsAsFlow(): Flow<EventTransaction<T>> =
         channelFlow { // TODO: set capacity to transactionBufferCapacity
             launch {
                 outgoingTransactionFlow.collect { item ->
+                    println("sent")
                     trySend(item).getOrElse {
                         close(Error("Private buffer of size $channel overflowed."))
                     }

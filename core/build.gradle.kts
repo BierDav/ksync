@@ -1,6 +1,7 @@
 plugins {
     id("multiplatform")
     alias(libs.plugins.kotlinx.serialization)
+    alias(libs.plugins.kotlinx.rpc)
 }
 
 kotlin {
@@ -13,7 +14,8 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             api(libs.sqlx4k)
-            implementation(libs.kotlinx.serialization.json)
+            implementation(libs.kotlinx.serialization.core)
+            implementation(libs.kotlinx.rpc.core)
         }
     }
 }

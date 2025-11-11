@@ -2,13 +2,16 @@ plugins {
     id("multiplatform")
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
-    alias(libs.plugins.composeHotReload)
+//    alias(libs.plugins.composeHotReload)
     alias(libs.plugins.ksp)
 }
 
 kotlin {
+    compilerOptions {
+        optIn.add("kotlin.uuid.ExperimentalUuidApi")
+    }
     sourceSets {
-        commonMain.dependencies {
+        jvmMain.dependencies {
             implementation(project(":example:shared"))
             implementation(project(":core"))
             implementation(project(":client"))
@@ -19,6 +22,7 @@ kotlin {
             implementation(compose.ui)
             implementation(compose.components.resources)
             implementation(compose.components.uiToolingPreview)
+            implementation(compose.desktop.currentOs)
             implementation(libs.androidx.lifecycle.viewmodelCompose)
             implementation(libs.androidx.lifecycle.runtimeCompose)
 
@@ -29,25 +33,30 @@ kotlin {
             implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.cio)
             implementation(libs.ktor.client.websockets)
-        }
+            implementation(libs.ktor.client.content.negotiation)
+            implementation(libs.ktor.serialization.kotlinx.json)
+            implementation(libs.kotlinx.rpc.krpc.client)
+            implementation(libs.kotlinx.rpc.krpc.ktor.client)
+            implementation(libs.kotlinx.rpc.krpc.serialization.cbor)
 
-        jvmMain.dependencies {
-            //implementation(compose.desktop.currentOs)
+            implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlinx.coroutines.swing)
+            implementation(libs.kotlinx.serialization.json)
         }
     }
 }
 
 ksp {
-    arg("output-package", "at.quickme.ksync.example.codegen")
+    arg("output-package", "at.quickme.ksync.example.codegen2")
 }
 
 dependencies {
-    add("kspCommonMainMetadata",project(":codegen"))
+    ksp(project(":codegen"))
 }
 
 
 compose.desktop {
     application {
-        mainClass = "at.quickme.ksync.example.MainKt"
+        mainClass = "at.quickme.ksync.example.ApplicationKt"
     }
 }

@@ -1,4 +1,4 @@
-package at.quickme.ksync.at.quickme.ksync.example.entity
+package at.quickme.ksync.example.entity
 
 import io.github.smyrgeorge.sqlx4k.ResultSet
 import io.github.smyrgeorge.sqlx4k.RowMapper
