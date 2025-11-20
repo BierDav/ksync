@@ -10,7 +10,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlin.concurrent.atomics.AtomicLong
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.reflect.KClass
 import kotlin.uuid.Uuid
@@ -19,25 +18,25 @@ import kotlin.uuid.Uuid
 class KSyncClient<T : RepositoryEventBase>(
     val eventBase: KClass<T>,
     private val authorId: Uuid,
-    lastConfirmedTransactionId: Long,
+    var lastConfirmedTransactionId: Long,
     initialUnconfirmedTransactions: List<EventTransaction<T>>,
-    private val localDb: Driver,
+    private var driver: Driver,
     private val coroutineScope: CoroutineScope,
     private val repositoryProvider: RepositoryProvider,
     private val onSendEvent: suspend (event: EventTransaction<T>) -> Unit,
-    private val onRebase: suspend () -> Unit,
-    private val onTransactionCommited: suspend Transaction.(event: EventTransaction<T>) -> Unit
+    private val onRebase: suspend () -> Driver,
+    private val beforeTransactionCommit: suspend Transaction.(event: EventTransaction<T>) -> EventTransaction<T>
 ) {
 
-    val lastConfirmedTransactionId = AtomicLong(lastConfirmedTransactionId)
     private val transactionQueueMutex = Mutex()
-    private val unconfirmedTransactionQueue = initialUnconfirmedTransactions.sortedBy { it.sequence }.toMutableList()
 
+    private val unconfirmedTransactionQueue = initialUnconfirmedTransactions.sortedBy { it.sequence }.toMutableList()
     val nextUnconfirmedTransactionId: Long
         get() =
-            unconfirmedTransactionQueue.lastOrNull()?.sequence?.let { it + 1 } ?: (lastConfirmedTransactionId.load() + 1)
+            unconfirmedTransactionQueue.lastOrNull()?.sequence?.let { it + 1 }
+                ?: (lastConfirmedTransactionId + 1)
+    var currentDbId = initialUnconfirmedTransactions.maxOfOrNull { it.sequence } ?: lastConfirmedTransactionId
 
-    val nextAuthorId = AtomicLong(lastConfirmedTransactionId + 1)
 
     init {
         // check unconfirmed sequence
@@ -47,15 +46,20 @@ class KSyncClient<T : RepositoryEventBase>(
             for (transaction in unconfirmedTransactionQueue)
                 onSendEvent(transaction)
         }
+        swapDriver(driver)
+    }
 
-        localDb.hook.subscribeAsync(coroutineScope, Hooks.AfterBeginTransaction::class) {
+
+    private fun swapDriver(newDriver: Driver) {
+        driver = newDriver
+        driver.hook.subscribeAsync(coroutineScope, Hooks.AfterBeginTransaction::class) {
             it.result.getOrNull()?.metadata?.apply {
                 set(TransactionEventMetadata<T>())
             }
         }
 
 
-        localDb.hook.subscribeAsync(coroutineScope, EventHook::class) {
+        driver.hook.subscribeAsync(coroutineScope, EventHook::class) {
             when (it.source) {
                 is Transaction -> {
                     if (eventBase.isInstance(it.event)) {
@@ -70,38 +74,37 @@ class KSyncClient<T : RepositoryEventBase>(
             }
         }
 
-        localDb.hook.subscribeAsync(coroutineScope, Transaction.BeforeCommitHook::class) {
+        driver.hook.subscribeAsync(coroutineScope, Transaction.BeforeCommitHook::class) {
             val transactionMetadata = it.source.metadata.requireTransactionMetadata()
             if (transactionMetadata.occurredEvents.isEmpty())
                 return@subscribeAsync
 
             val event = EventTransaction(
+                sequence = currentDbId + 1,
                 events = transactionMetadata.occurredEvents.toList(),
                 author = authorId,
-                authorSequence = nextAuthorId.addAndFetch(1)
             )
-            transactionMetadata.eventTransaction = event
-            onTransactionCommited(it.source, event)
+            transactionMetadata.eventTransaction = beforeTransactionCommit(it.source, event)
         }
-        localDb.hook.subscribeAsync(coroutineScope, Transaction.AfterCommitHook::class) {
-            if (it.result.isFailure)
-                return@subscribeAsync
-            val transactionMetadata = it.source.metadata.requireTransactionMetadata()
-            transactionMetadata.eventTransaction?.run {
-                emitTransaction(this)
-                transactionMetadata.occurredEvents.clear()
-            }
-        }
-
-        localDb.hook.subscribeAsync(coroutineScope, Transaction.AfterRollbackHook::class) {
+        driver.hook.subscribeAsync(coroutineScope, Transaction.AfterCommitHook::class) {
             if (it.result.isFailure)
                 return@subscribeAsync
             val transactionMetadata = it.source.metadata.requireTransactionMetadata()
             transactionMetadata.occurredEvents.clear()
+            transactionMetadata.eventTransaction?.run { transactionCommited(this) }
+            transactionMetadata.eventTransaction = null
+        }
+
+        driver.hook.subscribeAsync(coroutineScope, Transaction.AfterRollbackHook::class) {
+            if (it.result.isFailure)
+                return@subscribeAsync
+            val transactionMetadata = it.source.metadata.requireTransactionMetadata()
+            transactionMetadata.occurredEvents.clear()
+            transactionMetadata.eventTransaction = null
         }
     }
 
-    suspend fun catchup(){
+    suspend fun catchup() {
         coroutineScope.launch {
             transactionQueueMutex.withLock {
                 for (transaction in unconfirmedTransactionQueue)
@@ -112,42 +115,63 @@ class KSyncClient<T : RepositoryEventBase>(
 
     suspend fun processIncomingTransaction(transaction: EventTransaction<T>) =
         transactionQueueMutex.withLock {
-            val expectedSequenceId = lastConfirmedTransactionId.load() + 1
+            val expectedSequenceId = lastConfirmedTransactionId + 1
             if (transaction.sequence > expectedSequenceId)
                 error("Expected incoming sequenceId $expectedSequenceId, but got ${transaction.sequence}.")
             else if (transaction.sequence < expectedSequenceId) {
                 println("Skipping old transaction with ${transaction.sequence}, next would be ${expectedSequenceId}")
                 return@withLock
             }
-            lastConfirmedTransactionId.compareAndExchange(expectedSequenceId - 1, transaction.sequence)
             when {
-                unconfirmedTransactionQueue.isEmpty() -> {
-                    localDb.transaction {
+                unconfirmedTransactionQueue.isNotEmpty()
+                        && transaction.authorSequence == unconfirmedTransactionQueue.first().authorSequence
+                        && transaction.author == authorId -> {
+                    if (currentDbId < transaction.sequence) {
+                        driver.transaction {
+                            transaction.execute(this, repositoryProvider)
+                            beforeTransactionCommit(this, transaction)
+                            metadata.requireTransactionMetadata().occurredEvents.clear()
+                        }
+                        currentDbId = transaction.sequence
+                    }
+                    unconfirmedTransactionQueue.removeFirst()
+                    println("Last transaction confirmed: ${transaction.sequence}")
+                }
+
+                lastConfirmedTransactionId == currentDbId -> {
+                    driver.transaction {
                         transaction.execute(this, repositoryProvider)
+                        beforeTransactionCommit(this, transaction)
                         metadata.requireTransactionMetadata().occurredEvents.clear()
                     }
+                    currentDbId = transaction.sequence
                     println("Got transaction $lastConfirmedTransactionId")
                 }
 
-                transaction.sequence == unconfirmedTransactionQueue.first().sequence
-                        && transaction.author == authorId -> {
-                    unconfirmedTransactionQueue.removeFirst()
-                    println("Last transaction confirmed")
-                }
 
-                else -> onRebase()
+                else -> {
+                    val driver = onRebase()
+                    swapDriver(driver)
+                    driver.transaction {
+                        transaction.execute(this, repositoryProvider)
+                        beforeTransactionCommit(this, transaction)
+                        metadata.requireTransactionMetadata().occurredEvents.clear()
+                    }
+                    currentDbId = transaction.sequence
+                    println("Rebased and applied transaction $lastConfirmedTransactionId")
+                }
             }
+            lastConfirmedTransactionId = transaction.sequence
         }
 
-    private suspend fun emitTransaction(transaction: EventTransaction<T>) {
-        val sequencedTransaction = transactionQueueMutex.withLock {
-            val element = transaction.copy(sequence = nextUnconfirmedTransactionId)
-            unconfirmedTransactionQueue.add(element)
-            element
+    private suspend fun transactionCommited(transaction: EventTransaction<T>) {
+        transactionQueueMutex.withLock {
+            currentDbId = transaction.sequence
+            unconfirmedTransactionQueue.add(transaction)
         }
         try {
-            println("Sending transaction ${sequencedTransaction.sequence}")
-            onSendEvent(sequencedTransaction)
+            println("Sending transaction ${transaction.sequence}")
+            onSendEvent(transaction)
         } catch (e: Throwable) {
             print(e)
         }

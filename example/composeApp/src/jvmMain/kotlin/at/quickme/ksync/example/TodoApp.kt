@@ -37,7 +37,7 @@ fun TodoApp() {
             .mapNotNull { it.getOrNull() }
     }.collectAsStateWithLifecycle(emptyList())
 
-    val isConnected by database.isConnectedState.collectAsStateWithLifecycle()
+    val isConnected by database.isConnected.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
         val test = database.fetchAll("select * from todo").getOrThrow()
@@ -146,7 +146,7 @@ fun TodoList(
     LazyColumn(
         modifier = Modifier.fillMaxSize()
     ) {
-        items(items, key = { it.task }) { item ->
+        items(items, key = { it.id }) { item ->
             TodoListItem(
                 item = item,
                 onToggle = { onToggleItem(item) },
